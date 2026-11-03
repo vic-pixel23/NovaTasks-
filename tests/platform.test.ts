@@ -21,3 +21,18 @@ test('generated migration creates the schema and enforces financial constraints'
  const indices=await db.query<{indexname:string}>("SELECT indexname FROM pg_indexes WHERE schemaname='public'");for(const name of ['one_submission_per_user_task','withdrawal_idempotency'])assert.ok(indices.rows.some(r=>r.indexname===name));
  }finally{await db.close();}
 });
+
+test('API recognizes request-cookie sessions without Identity global context',async()=>{
+ const originalFetch=globalThis.fetch;
+ try{
+  globalThis.fetch=async()=>Response.json({id:'existing-user',email:'owner@example.test'});
+  const unconfirmed=await handler(new Request('https://example.test/api/me',{headers:{cookie:'nf_jwt=test-session'}}));
+  assert.equal(unconfirmed.status,403);assert.match((await unconfirmed.json()).error,/email address is not confirmed/);
+  globalThis.fetch=async()=>new Response(null,{status:401});
+  const expired=await handler(new Request('https://example.test/api/me',{headers:{cookie:'nf_jwt=test-session'}}));
+  assert.equal(expired.status,401);assert.match((await expired.json()).error,/session is missing or expired/);
+  globalThis.fetch=async()=>{throw Error('offline');};
+  const unavailable=await handler(new Request('https://example.test/api/me',{headers:{cookie:'nf_jwt=test-session'}}));
+  assert.equal(unavailable.status,503);assert.doesNotMatch((await unavailable.json()).error,/verified email/);
+ }finally{globalThis.fetch=originalFetch;}
+});
