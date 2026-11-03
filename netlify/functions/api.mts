@@ -1,4 +1,5 @@
 import { getUser } from '@netlify/identity';
+import { hasVerifiedEmail } from './verified-user.js';
 import { getDatabase } from '@netlify/database';
 import { eq, desc } from 'drizzle-orm';
 import { database } from '../../db/index.js';
@@ -14,7 +15,7 @@ export default async (req:Request) => {
   if(!['GET','POST'].includes(req.method))fail(405,'Method not allowed.');
   if(req.method==='POST' && req.headers.get('origin')!==new URL(req.url).origin)fail(403,'Invalid request origin.');
   const identity=await getUser();
-  if(!identity||!identity.confirmedAt)fail(401,'Sign in with a verified email address.');
+  if(!identity||!await hasVerifiedEmail(identity,req))fail(401,'Sign in with a verified email address.');
   const db=database();
   const role=identity.roles?.includes('admin')?'admin':'member';
   await db.insert(users).values({id:identity.id,email:identity.email!,fullName:identity.name||identity.email!,registeredAt:identity.createdAt?new Date(identity.createdAt):new Date(),role}).onConflictDoUpdate({target:users.id,set:{email:identity.email!,role}});

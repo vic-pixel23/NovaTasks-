@@ -1,11 +1,11 @@
 import { login, signup, logout, getUser, handleAuthCallback, requestPasswordRecovery, updateUser, acceptInvite } from './identity.js';
-const $=id=>document.getElementById(id);let me=null,data=null,admin=null,inviteToken=null;
+const $=id=>document.getElementById(id);let me=null,data=null,admin=null,inviteToken=null;let authBusy=true,passwordRequired=false;
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=n=>new Intl.NumberFormat('en-NG',{style:'currency',currency:'NGN'}).format(n/100);
 function notice(message){$('message').textContent=message;}
 async function api(path,body){await getUser();const r=await fetch('/api/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed.');return d;}
-async function run(action){try{notice('Loading…');await action();notice('');}catch(e){notice(e.message);}}
-function showPage(id){if(['dashboard','task-details','admin','creator-dashboard'].includes(id)&&!me)id='login';if(['admin','creator-dashboard'].includes(id)&&me?.role!=='admin')id='dashboard';document.querySelectorAll('.page').forEach(s=>s.classList.toggle('active',s.id===id));window.scrollTo({top:0,behavior:'smooth'});}
+async function run(action){try{notice('Loading…');notice('');await action();}catch(e){notice(e.message);}}
+function showPage(id){if(passwordRequired)id='password-reset';if(!document.getElementById(id)?.classList.contains('page'))id=me?'dashboard':'home';if(['dashboard','task-details','admin','creator-dashboard'].includes(id)&&!me)id='login';if(['admin','creator-dashboard'].includes(id)&&me?.role!=='admin')id='dashboard';document.querySelectorAll('.page').forEach(s=>s.classList.toggle('active',s.id===id));window.scrollTo({top:0,behavior:'smooth'});}
 Object.assign(window,{showPage});
 function field(name,label,type='text',extra=''){return `<div class="field"><label for="${name}">${label}</label><input id="${name}" name="${name}" type="${type}" required ${extra}></div>`;}
 function form(id,content,label){return `<form id="${id}">${content}<button class="primary">${label}</button></form>`;}
@@ -26,21 +26,49 @@ for(const id of ['login','creator-login','admin-login']){const container=$(id);c
 const rf=$('register').querySelector('form');rf.removeAttribute('onsubmit');rf.id='register-form';rf.querySelectorAll('input').forEach((i,n)=>i.name=['name','email','password'][n]);$('register').querySelector('.notice').textContent='Verify your email to activate your account.';
 $('login').querySelector('.card').insertAdjacentHTML('beforeend','<button class="outline" id="forgot">Forgot password</button>');
 let withdrawalKey=crypto.randomUUID();
-document.addEventListener('submit',e=>{e.preventDefault();const f=e.target,b=Object.fromEntries(new FormData(f));run(async()=>{
- if(f.id.endsWith('login-form')){await login(b.email,b.password);f.reset();await refresh();showPage(f.id==='login-form'?'dashboard':'creator-dashboard');}
- if(f.id==='register-form'){await signup(b.email,b.password,{full_name:b.name});f.reset();notice('Check your email to confirm your account.');alert('Check your email to confirm your account.');}
- if(f.id==='password-form'){if(inviteToken)await acceptInvite(inviteToken,b.password);else await updateUser({password:b.password});inviteToken=null;await refresh();showPage('dashboard');}
+document.addEventListener('submit',e=>{e.preventDefault();if(authBusy)return;const f=e.target,b=Object.fromEntries(new FormData(f));run(async()=>{
+ if(f.id.endsWith('login-form')){await login(b.email,b.password);f.reset();if(new URLSearchParams(location.hash.slice(1)).has('email_change_token')){await processAuthCallback();return;}await refresh();showPage(f.id==='login-form'?'dashboard':'creator-dashboard');notice('Signed in successfully.');}
+ if(f.id==='register-form'){await signup(b.email,b.password,{full_name:b.name});f.reset();notice('Check your email to confirm your account.');}
+ if(f.id==='password-form'){if(inviteToken)await acceptInvite(inviteToken,b.password);else await updateUser({password:b.password});inviteToken=null;passwordRequired=false;f.reset();await refresh();showPage('dashboard');notice('Password saved successfully.');}
  if(f.id==='task-form'){await api('admin/task',{...b,slots:Number(b.slots)});await refresh();}
  if(f.id==='proof-form'){await api('submit',{taskId:f.dataset.task,proof:b.proof});await refresh();showPage('dashboard');}
  if(f.id==='withdraw'){await api('withdraw',{...b,requestKey:withdrawalKey});withdrawalKey=crypto.randomUUID();await refresh();}
  });});
-document.addEventListener('click',e=>{const el=e.target.closest('button');if(!el)return;run(async()=>{
+document.addEventListener('click',e=>{const el=e.target.closest('button');if(!el||authBusy)return;run(async()=>{
  if(el.id==='logout'){await logout();me=data=admin=null;document.querySelectorAll('#dashboard,#admin,#creator-dashboard,#task-detail-content').forEach(x=>x.innerHTML='');render();showPage('home');}
- if(el.id==='forgot'){const email=prompt('Email address for password recovery');if(email){await requestPasswordRecovery(email);alert('Check your email for a recovery link.');}}
+ if(el.id==='forgot'){const email=prompt('Email address for password recovery');if(email){await requestPasswordRecovery(email);notice('Check your email for a password recovery link.');}}
  if(el.dataset.task){const t=data.tasks.find(t=>t.id===el.dataset.task);$('task-detail-content').innerHTML=`<span class="tag">${esc(t.kind)}</span><h2>${esc(t.title)}</h2><p style="white-space:pre-wrap;margin:20px 0">${esc(t.description)}</p><div class="reward">${money(t.rewardKobo)}</div>${form('proof-form','<div class="field"><label for="proof">Proof (text or a link)</label><textarea id="proof" name="proof" required maxlength="5000"></textarea></div>','Submit for review')}`;$('proof-form').dataset.task=t.id;showPage('task-details');}
  if(el.dataset.taskStatus){await api('admin/task',{id:el.dataset.id,status:el.dataset.taskStatus});await refresh();}
  if(el.dataset.user){await api('admin/user',{id:el.dataset.user,status:el.dataset.status});await refresh();}
  if(el.dataset.review){let paymentReference;if(el.dataset.status==='paid'){paymentReference=prompt('Enter the reference from the completed bank transfer. Recording a payment does not transfer funds.');if(!paymentReference)return;}await api('admin/'+el.dataset.review,{id:el.dataset.id,status:el.dataset.status,paymentReference});await refresh();}
  });});
-window.addEventListener('hashchange',()=>showPage(location.hash.slice(1)||'home'));
-run(async()=>{const callback=await handleAuthCallback();if(callback?.type==='invite'||callback?.type==='recovery'){inviteToken=callback.token;$('password-reset').innerHTML='<div class="card"><h2>Set your password</h2>'+form('password-form',field('new-password','New password','password','minlength="8" autocomplete="new-password"').replace('name="new-password"','name="password"'),'Save password')+'</div>';showPage('password-reset');return;}if(await getUser()){await refresh();showPage(location.hash.slice(1)||'dashboard');}else{render();showPage(location.hash.slice(1)||'home');}});
+function showPasswordForm(callback){
+ inviteToken=callback.type==='invite'?callback.token:null;passwordRequired=true;
+ $('password-reset').innerHTML='<div class="card"><h2>Set your password</h2>'+form('password-form',field('new-password','New password','password','minlength="8" autocomplete="new-password"').replace('name="new-password"','name="password"'),'Save password')+'</div>';
+ showPage('password-reset');notice('Enter a new password to finish signing in.');
+}
+async function processAuthCallback(){
+ const params=new URLSearchParams(location.hash.slice(1));
+ const isCallback=['confirmation_token','email_change_token','recovery_token','invite_token','access_token','error','error_description'].some(key=>params.has(key));
+ try{
+  if(params.has('error')||params.has('error_description'))throw Error('This authentication link is invalid or expired. Request a new link and try again.');
+  // Hydrate cookie sessions before the library processes email-change tokens.
+  if(params.has('email_change_token')&&!await getUser()){
+   render();showPage('login');notice('Sign in to your existing account, then your email change will be confirmed.');return;
+  }
+  const callback=await handleAuthCallback();
+  if(callback?.type==='invite'||callback?.type==='recovery'){showPasswordForm(callback);return;}
+  if(await getUser()){await refresh();showPage(isCallback?'dashboard':location.hash.slice(1)||'dashboard');}
+  else{render();showPage(location.hash.slice(1)||'home');}
+  if(callback?.type==='confirmation')notice('Email confirmed successfully. You are signed in.');
+  if(callback?.type==='email_change')notice('Email change confirmed successfully.');
+  if(callback?.type==='oauth')notice('Signed in successfully.');
+ }catch(error){
+  if(isCallback)history.replaceState(null,'',location.pathname+location.search);
+  render();showPage('login');
+  notice(isCallback?'Unable to complete authentication. The link may be expired or already used. Try signing in, or request a new link.':error.message);
+ }
+}
+async function startAuth(){authBusy=true;try{await processAuthCallback();}finally{authBusy=false;}}
+window.addEventListener('hashchange',()=>{if(authBusy)return;const params=new URLSearchParams(location.hash.slice(1));if(['confirmation_token','email_change_token','recovery_token','invite_token','access_token','error','error_description'].some(key=>params.has(key)))startAuth();else showPage(location.hash.slice(1)||'home');});
+startAuth();
