@@ -1,4 +1,4 @@
-import { getUser } from '@netlify/identity';
+import { verifiedIdentity } from '../../lib/identity.mjs';
 import { getDatabase } from '@netlify/database';
 import { eq, desc } from 'drizzle-orm';
 import { database } from '../../db/index.js';
@@ -13,7 +13,7 @@ export default async (req:Request) => {
  try {
   if(!['GET','POST'].includes(req.method))fail(405,'Method not allowed.');
   if(req.method==='POST' && req.headers.get('origin')!==new URL(req.url).origin)fail(403,'Invalid request origin.');
-  const identity=await getUser();
+  const identity=await verifiedIdentity(req);
   if(!identity||!identity.confirmedAt)fail(401,'Sign in with a verified email address.');
   const db=database();
   const role=identity.roles?.includes('admin')?'admin':'member';

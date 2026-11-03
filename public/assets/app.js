@@ -4,7 +4,7 @@ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const money=n=>new Intl.NumberFormat('en-NG',{style:'currency',currency:'NGN'}).format(n/100);
 function notice(message){$('message').textContent=message;}
 async function api(path,body){await getUser();const r=await fetch('/api/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed.');return d;}
-async function run(action){try{notice('Loading…');await action();notice('');}catch(e){notice(e.message);}}
+async function run(action){try{notice('Loading…');notice(await action()||'');}catch(e){notice(e.message);}}
 function showPage(id){if(['dashboard','task-details','admin','creator-dashboard'].includes(id)&&!me)id='login';if(['admin','creator-dashboard'].includes(id)&&me?.role!=='admin')id='dashboard';document.querySelectorAll('.page').forEach(s=>s.classList.toggle('active',s.id===id));window.scrollTo({top:0,behavior:'smooth'});}
 Object.assign(window,{showPage});
 function field(name,label,type='text',extra=''){return `<div class="field"><label for="${name}">${label}</label><input id="${name}" name="${name}" type="${type}" required ${extra}></div>`;}
@@ -22,19 +22,34 @@ function renderAdmin(){const a=admin,s=a.statistics;const content=`<h1>Administr
  $('creator-dashboard').innerHTML=content;$('admin').innerHTML='<h1>Administrator Dashboard</h1><button class="primary" onclick="showPage(\'creator-dashboard\')">Open administration workspace</button>';
 }
 async function refresh(){data=await api('me');me=data.user;admin=me.role==='admin'?await api('admin'):null;render();}
-for(const id of ['login','creator-login','admin-login']){const container=$(id);const f=container.querySelector('form');f.removeAttribute('onsubmit');f.id=id+'-form';f.querySelector('[type=email]').name='email';f.querySelector('[type=password]').name='password';f.querySelector('[type=password]').autocomplete='current-password';container.querySelector('.notice').textContent='Sign in securely with your NovaTasks account.';}
+for(const id of ['login','creator-login','admin-login']){const container=$(id);const f=container.querySelector('form');f.removeAttribute('onsubmit');f.id=id+'-form';f.querySelector('[type=email]').name='email';f.querySelector('[type=password]').name='password';f.querySelector('[type=password]').autocomplete='current-password';container.querySelector('.notice').textContent='Sign in securely with your NovaTasks account. If your email is not confirmed, we’ll send you a verification link.';f.insertAdjacentHTML('beforeend','<button type="button" class="outline" data-resend-verification style="margin-top:12px">Resend verification email</button>');}
 const rf=$('register').querySelector('form');rf.removeAttribute('onsubmit');rf.id='register-form';rf.querySelectorAll('input').forEach((i,n)=>i.name=['name','email','password'][n]);$('register').querySelector('.notice').textContent='Verify your email to activate your account.';
 $('login').querySelector('.card').insertAdjacentHTML('beforeend','<button class="outline" id="forgot">Forgot password</button>');
+const verificationMessage='Verification email sent. Check your inbox and spam folder, then click the link to finish signing in.';
+async function sendVerification(f){
+ const email=f.elements.email.value.trim(),password=f.elements.password.value;
+ if(!email||!password||!f.reportValidity())throw Error('Enter your email and password to resend verification.');
+ try{await signup(email,password);}catch(e){throw Error('Could not send the verification email. '+e.message);}
+ f.closest('.page').querySelector('.notice').textContent=verificationMessage;
+ return verificationMessage;
+}
 let withdrawalKey=crypto.randomUUID();
-document.addEventListener('submit',e=>{e.preventDefault();const f=e.target,b=Object.fromEntries(new FormData(f));run(async()=>{
- if(f.id.endsWith('login-form')){await login(b.email,b.password);f.reset();await refresh();showPage(f.id==='login-form'?'dashboard':'creator-dashboard');}
- if(f.id==='register-form'){await signup(b.email,b.password,{full_name:b.name});f.reset();notice('Check your email to confirm your account.');alert('Check your email to confirm your account.');}
+document.addEventListener('submit',e=>{e.preventDefault();const f=e.target,b=Object.fromEntries(new FormData(f));if(f.dataset.busy)return;f.dataset.busy='true';const submit=f.querySelector('[type=submit],button.primary');if(submit)submit.disabled=true;run(async()=>{
+ if(f.id.endsWith('login-form')){
+  try{await login(b.email.trim(),b.password);}catch(e){
+   if(/email.*(?:not confirmed|not verified|unconfirmed)|confirm.*email/i.test(e.message))return await sendVerification(f);
+   throw e;
+  }
+  await refresh();f.reset();showPage(f.id==='login-form'?'dashboard':'creator-dashboard');
+ }
+
+ if(f.id==='register-form'){const user=await signup(b.email.trim(),b.password,{full_name:b.name});f.reset();if(user.confirmedAt){await refresh();showPage('dashboard');return 'Account created. You are signed in.';}return verificationMessage;}
  if(f.id==='password-form'){if(inviteToken)await acceptInvite(inviteToken,b.password);else await updateUser({password:b.password});inviteToken=null;await refresh();showPage('dashboard');}
  if(f.id==='task-form'){await api('admin/task',{...b,slots:Number(b.slots)});await refresh();}
  if(f.id==='proof-form'){await api('submit',{taskId:f.dataset.task,proof:b.proof});await refresh();showPage('dashboard');}
  if(f.id==='withdraw'){await api('withdraw',{...b,requestKey:withdrawalKey});withdrawalKey=crypto.randomUUID();await refresh();}
- });});
-document.addEventListener('click',e=>{const el=e.target.closest('button');if(!el)return;run(async()=>{
+ }).finally(()=>{delete f.dataset.busy;if(submit)submit.disabled=false;});});
+document.addEventListener('click',e=>{const el=e.target.closest('button');if(!el)return;if(el.hasAttribute('data-resend-verification')){const f=el.closest('form');if(f.dataset.busy)return;f.dataset.busy='true';el.disabled=true;run(()=>sendVerification(f)).finally(()=>{delete f.dataset.busy;el.disabled=false;});return;}run(async()=>{
  if(el.id==='logout'){await logout();me=data=admin=null;document.querySelectorAll('#dashboard,#admin,#creator-dashboard,#task-detail-content').forEach(x=>x.innerHTML='');render();showPage('home');}
  if(el.id==='forgot'){const email=prompt('Email address for password recovery');if(email){await requestPasswordRecovery(email);alert('Check your email for a recovery link.');}}
  if(el.dataset.task){const t=data.tasks.find(t=>t.id===el.dataset.task);$('task-detail-content').innerHTML=`<span class="tag">${esc(t.kind)}</span><h2>${esc(t.title)}</h2><p style="white-space:pre-wrap;margin:20px 0">${esc(t.description)}</p><div class="reward">${money(t.rewardKobo)}</div>${form('proof-form','<div class="field"><label for="proof">Proof (text or a link)</label><textarea id="proof" name="proof" required maxlength="5000"></textarea></div>','Submit for review')}`;$('proof-form').dataset.task=t.id;showPage('task-details');}
@@ -43,4 +58,4 @@ document.addEventListener('click',e=>{const el=e.target.closest('button');if(!el
  if(el.dataset.review){let paymentReference;if(el.dataset.status==='paid'){paymentReference=prompt('Enter the reference from the completed bank transfer. Recording a payment does not transfer funds.');if(!paymentReference)return;}await api('admin/'+el.dataset.review,{id:el.dataset.id,status:el.dataset.status,paymentReference});await refresh();}
  });});
 window.addEventListener('hashchange',()=>showPage(location.hash.slice(1)||'home'));
-run(async()=>{const callback=await handleAuthCallback();if(callback?.type==='invite'||callback?.type==='recovery'){inviteToken=callback.token;$('password-reset').innerHTML='<div class="card"><h2>Set your password</h2>'+form('password-form',field('new-password','New password','password','minlength="8" autocomplete="new-password"').replace('name="new-password"','name="password"'),'Save password')+'</div>';showPage('password-reset');return;}if(await getUser()){await refresh();showPage(location.hash.slice(1)||'dashboard');}else{render();showPage(location.hash.slice(1)||'home');}});
+run(async()=>{const callback=await handleAuthCallback();if(callback?.type==='invite'||callback?.type==='recovery'){inviteToken=callback.token;$('password-reset').innerHTML='<div class="card"><h2>Set your password</h2>'+form('password-form',field('new-password','New password','password','minlength="8" autocomplete="new-password"').replace('name="new-password"','name="password"'),'Save password')+'</div>';showPage('password-reset');return;}if(await getUser()){await refresh();showPage(location.hash.slice(1)||'dashboard');if(callback?.type==='confirmation')return 'Email verified. You are now signed in.';}else{render();showPage(location.hash.slice(1)||'home');}});
